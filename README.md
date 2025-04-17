@@ -1,50 +1,33 @@
-terraform infrastructure for eks
+![Workflow Diagram](images/microservices.drawio.png)
+
+
+Microservices
 ================================
+## Requirements
 
-## eks
+- Kubernetes
+
+
+## Install Powershell On GitLab Runner (If Required)
 
 ```
-# vpc module
-module "vpc" {
-  source = "terraform-aws-modules/vpc/aws"
-
-  name = var.vpc_name
-  cidr = var.cidr
-
-  azs             = var.azs
-  private_subnets = var.private_subnets
-  public_subnets  = var.public_subnets
-
-  enable_nat_gateway = var.enable_nat_gateway (bool)
-  single_nat_gateway = var.single_nat_gateway (bool)
-
-}
-# eks module
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
-
-  cluster_name    = var.cluster_name
-  cluster_version = var.cluster_version
-  subnet_ids      = module.vpc.private_subnets
-  vpc_id          = module.vpc.vpc_id
-
-  # IAM roles for service accounts
-  enable_irsa = var.enable_irsa (bool)
-
-  cluster_endpoint_public_access = var.cluster_endpoint_public_access (bool)
-
-  # Optional: Adds the current caller identity as an administrator via cluster access entry
-  enable_cluster_creator_admin_permissions = var.enable_cluster_creator_admin_permissions (bool)
-
-  eks_managed_node_groups = {
-    default = {
-      desired_size = var.desired_size
-      min_size     = var.min_size
-      max_size     = var.max_size
-
-      instance_types = var.instance_types
-    }
-  }
-}
+# Update System Packages
+sudo apt update && sudo apt upgrade -y
+# Install Required Dependencies
+sudo apt install -y wget apt-transport-https software-properties-common
+# Import the Microsoft GPG Key
+wget -q "https://packages.microsoft.com/keys/microsoft.asc" -O- | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
+# Add Microsoft Repository
+echo "deb [arch=amd64] https://packages.microsoft.com/ubuntu/$(lsb_release -rs)/prod $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/microsoft.list
+# Install PowerShell
+sudo apt update
+sudo apt install -y powershell
+# Verify Installation
+pwsh --version
 ```
+
+## How To Use
+
+- Create EKS Infrastructure Using [GitLab Repository Link](https://gitlab.com/prathmesh.arcade/iac_microservices_demo.git)
+
+- Run Pipeline

@@ -1,47 +1,134 @@
-image:
-  name: hashicorp/terraform:latest
-  entrypoint: ["sh", "-c"]
+image: docker:latest
+
+services:
+  - docker:dind
 
 stages:
-  - validate
-  - plan-eks
-  - apply-eks
-  - destroy-eks
+  - sonarqube_scan
+  - quality_gate
+  - build
+  - push
+  - update_img_tag
+  - deploy
 
-validate:
-  stage: validate
+sonarqube_scan:
+  stage: sonarqube_scan
+  image: sonarsource/sonar-scanner-cli:latest
   script:
-    - terraform fmt -check -recursive || echo "Formatting issues detected, please fix them."
-    - terraform init
-    - terraform validate
+    - sonar-scanner -X
+      -Dsonar.host.url=$SONAR_HOST_URL
+      -Dsonar.projectKey=$SONAR_PROJECT_KEY
+      -Dsonar.login=$SONAR_LOGIN
+      -Dsonar.sources=.
+      -Dsonar.exclusions="**/*.java"
+  allow_failure: false
 
-
-plan-eks:
-  stage: plan-eks
+quality_gate:
+  stage: quality_gate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl jq
   script:
-    - terraform init
-    - terraform plan -out=tfplan -input=false
-  when: manual
+    - echo "Checking SonarQube Quality Gate..."
+    - |
+      STATUS=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" | jq -r .projectStatus.status)
+      if [[ "$STATUS" == "ERROR" ]]; then
+        echo "Quality Gate failed!"
+        exit 1
+      else
+        echo "Quality Gate passed!"
+      fi
+
+build_images:
+  stage: build
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - mkdir -p docker_artifacts  # Create a directory inside the project
+    - |
+      for dir in src/*; do
+        if [ -d "$dir" ] && [ -f "$dir/Dockerfile" ]; then
+          IMAGE_NAME=$(basename "$dir")
+          IMAGE_TAG="$CI_REGISTRY_IMAGE/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+          echo "Building $IMAGE_TAG..."
+          docker build -t "$IMAGE_TAG" "$dir"
+          docker save -o "docker_artifacts/${IMAGE_NAME}.tar" "$IMAGE_TAG"
+        fi
+      done
   artifacts:
     paths:
-      - tfplan
-      - .terraform/ # Store downloaded providers
-      - .terraform.lock.hcl # Ensure provider versions match
+      - docker_artifacts/*.tar
+    expire_in: 1 hour
 
-apply-eks:
-  stage: apply-eks
+
+push_images:
+  stage: push
   script:
-    - terraform init
-    - terraform apply -auto-approve -input=false tfplan
-  when: manual
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - |
+      for tar_file in docker_artifacts/*.tar; do
+        IMAGE_NAME=$(basename "$tar_file" .tar)
+        IMAGE_TAG="$CI_REGISTRY_IMAGE/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+        echo "Loading and pushing $IMAGE_TAG..."
+        docker load -i "$tar_file"
+        docker push "$IMAGE_TAG"
+      done
   dependencies:
-    - plan-eks
+    - build_images
 
-destroy-eks:
-  stage: destroy-eks
+tag_update:
+  stage: update_img_tag
+  before_script:
+    - set -e
+    - echo "Using Bash shell..."
   script:
-    - terraform init
-    - terraform destroy -auto-approve -input=false
+    - echo "Cloning GitLab manifest repository..."
+    - git clone https://oauth2:${GITLAB_TOKEN}@gitlab.com/prathmesh.arcade/microservices_demo.git
+    - cd microservices_demo
+    - ls -la
+
+    # update image tag
+    - |-
+      for file in kubernetes-manifests/*.yaml; do
+        if [[ "$file" == *"kustomization.yaml" || "$file" == *"README.md" ]]; then
+          echo "Skipping $file"
+        else
+          service_name=$(basename "$file" .yaml)
+          sed -i "s|registry.gitlab.com/prathmesh.arcade/microservices_demo/${service_name}:[^ ]*|registry.gitlab.com/prathmesh.arcade/microservices_demo/${service_name}:${CI_COMMIT_SHORT_SHA}|" "$file"
+        fi
+      done
+
+    # Configure Git
+    - git config --global user.email "prathmesh.arcade@gmail.com"
+    - git config --global user.name "prathmesh.arcade"
+
+    # Commit and push changes
+    - git add .
+    - git commit -m "Updated image tags to ${CI_COMMIT_SHORT_SHA} [ci skip]"
+    - git push --set-upstream origin main
+
+
+deploy_to_eks:
+  stage: deploy
+  image: alpine/k8s:1.26.10
   when: manual
-  needs:
-    - apply-eks
+  before_script:
+    - echo "Setting up AWS CLI and kubectl"
+    # Install AWS CLI and configure credentials
+    - apk add --no-cache py3-pip bash
+    - pip install awscli
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+    - aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+    - aws configure set default.region $AWS_DEFAULT_REGION
+    # Set kubeconfig to point to EKS cluster
+    - aws eks --region $AWS_DEFAULT_REGION update-kubeconfig --name $EKS_CLUSTER_NAME
+    # Create the namespace in EKS (if it doesn't exist)
+    - kubectl create namespace microservices || echo "Namespace microservices already exists"
+    # Create secret in kubernetes
+    - kubectl create secret docker-registry gitlab-registry-secret --docker-server=registry.gitlab.com --docker-username="${USERNAME}" --docker-password="${GITLAB_TOKEN}" --docker-email="${EMAIL}" --namespace=microservices
+  script:
+    - echo "Deploying to EKS using kubectl"
+    # Apply all the Kubernetes manifests from the directory, using the microservices namespace
+    - for file in kubernetes-manifests/*.yaml; do
+        [[ "$file" != *"kustomization.yaml" ]] && kubectl apply -f "$file" --namespace=microservices;
+      done
+    - kubectl get svc -n microservices
