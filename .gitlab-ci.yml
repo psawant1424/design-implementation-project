@@ -1,0 +1,47 @@
+image:
+  name: hashicorp/terraform:latest
+  entrypoint: ["sh", "-c"]
+
+stages:
+  - validate
+  - plan-eks
+  - apply-eks
+  - destroy-eks
+
+validate:
+  stage: validate
+  script:
+    - terraform fmt -check -recursive || echo "Formatting issues detected, please fix them."
+    - terraform init
+    - terraform validate
+
+
+plan-eks:
+  stage: plan-eks
+  script:
+    - terraform init
+    - terraform plan -out=tfplan -input=false
+  when: manual
+  artifacts:
+    paths:
+      - tfplan
+      - .terraform/ # Store downloaded providers
+      - .terraform.lock.hcl # Ensure provider versions match
+
+apply-eks:
+  stage: apply-eks
+  script:
+    - terraform init
+    - terraform apply -auto-approve -input=false tfplan
+  when: manual
+  dependencies:
+    - plan-eks
+
+destroy-eks:
+  stage: destroy-eks
+  script:
+    - terraform init
+    - terraform destroy -auto-approve -input=false
+  when: manual
+  needs:
+    - apply-eks

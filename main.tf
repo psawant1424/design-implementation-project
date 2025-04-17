@@ -1,9 +1,3 @@
-terraform infrastructure for eks
-================================
-
-## eks
-
-```
 # vpc module
 module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
@@ -15,8 +9,8 @@ module "vpc" {
   private_subnets = var.private_subnets
   public_subnets  = var.public_subnets
 
-  enable_nat_gateway = var.enable_nat_gateway (bool)
-  single_nat_gateway = var.single_nat_gateway (bool)
+  enable_nat_gateway = var.enable_nat_gateway
+  single_nat_gateway = var.single_nat_gateway
 
 }
 # eks module
@@ -30,12 +24,12 @@ module "eks" {
   vpc_id          = module.vpc.vpc_id
 
   # IAM roles for service accounts
-  enable_irsa = var.enable_irsa (bool)
+  enable_irsa = var.enable_irsa
 
-  cluster_endpoint_public_access = var.cluster_endpoint_public_access (bool)
+  cluster_endpoint_public_access = var.cluster_endpoint_public_access
 
   # Optional: Adds the current caller identity as an administrator via cluster access entry
-  enable_cluster_creator_admin_permissions = var.enable_cluster_creator_admin_permissions (bool)
+  enable_cluster_creator_admin_permissions = var.enable_cluster_creator_admin_permissions
 
   eks_managed_node_groups = {
     default = {
@@ -47,4 +41,3 @@ module "eks" {
     }
   }
 }
-```
